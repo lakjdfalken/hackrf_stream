@@ -21,12 +21,13 @@ bundles it.
 from ._libhackrf import HackRFError
 from .dsp import (SpectrumAccumulator, fast_fft_size, frequencies,
                   remove_dc_spike, split_gain)
-from .source import MAX_SAMPLE_RATE, MIN_SAMPLE_RATE, SpectrumSource, library_version
+from .source import (BAND_BACKLOG, MAX_SAMPLE_RATE, MIN_SAMPLE_RATE,
+                     SpectrumSource, devices, library_version)
 
 __version__ = "0.1.0"
 __all__ = [
     "HackRFError", "SpectrumAccumulator", "SpectrumSource",
-    "MAX_SAMPLE_RATE", "MIN_SAMPLE_RATE",
-    "fast_fft_size", "frequencies", "library_version", "remove_dc_spike",
+    "BAND_BACKLOG", "MAX_SAMPLE_RATE", "MIN_SAMPLE_RATE",
+    "devices", "fast_fft_size", "frequencies", "library_version", "remove_dc_spike",
     "split_gain",
 ]

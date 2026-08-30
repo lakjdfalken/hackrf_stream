@@ -28,6 +28,7 @@ _SIGNATURES = (
     ("hackrf_is_streaming", (ctypes.c_void_p,), ctypes.c_int),
     ("hackrf_error_name", (ctypes.c_int,), ctypes.c_char_p),
     ("hackrf_library_release", (), ctypes.c_char_p),
+    ("hackrf_usb_board_id_name", (ctypes.c_int,), ctypes.c_char_p),
 )
 
 
@@ -47,6 +48,21 @@ class Transfer(ctypes.Structure):
         ("valid_length", ctypes.c_int),
         ("rx_ctx", ctypes.c_void_p),
         ("tx_ctx", ctypes.c_void_p),
+    ]
+
+
+class DeviceList(ctypes.Structure):
+    """hackrf_device_list, as declared in libhackrf/hackrf.h
+
+    Only the first four fields are read; the libusb handles after them are
+    libhackrf's own business."""
+    _fields_ = [
+        ("serial_numbers", ctypes.POINTER(ctypes.c_char_p)),
+        ("usb_board_ids", ctypes.POINTER(ctypes.c_int)),
+        ("usb_device_index", ctypes.POINTER(ctypes.c_int)),
+        ("devicecount", ctypes.c_int),
+        ("usb_devices", ctypes.POINTER(ctypes.c_void_p)),
+        ("usb_devicecount", ctypes.c_int),
     ]
 
 
@@ -83,6 +99,12 @@ def _declare(lib):
     # start_rx is declared separately because its second argument is our callback
     lib.hackrf_start_rx.argtypes = [ctypes.c_void_p, RX_CALLBACK, ctypes.c_void_p]
     lib.hackrf_start_rx.restype = ctypes.c_int
+
+    # ...and the device list because it returns a struct we declared above
+    lib.hackrf_device_list.argtypes = []
+    lib.hackrf_device_list.restype = ctypes.POINTER(DeviceList)
+    lib.hackrf_device_list_free.argtypes = [ctypes.POINTER(DeviceList)]
+    lib.hackrf_device_list_free.restype = None
     return lib
 
 
