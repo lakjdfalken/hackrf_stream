@@ -27,11 +27,19 @@ def split_gain(gain_db):
     """Split one gain figure across the HackRF's two analogue stages
 
     The LNA moves in 8 dB steps to 40, the VGA in 2 dB steps to 62. Negative
-    means leave both at zero."""
+    means leave both at zero.
+
+    The LNA comes first, and is filled first. It is the stage that sets what
+    the receiver can hear: gain there lifts the signal above the noise of
+    everything after it. The VGA is at baseband and amplifies whatever the LNA
+    already let through, noise included, so gain spent there makes the trace
+    bigger without making the radio any more sensitive. Spreading a modest
+    request across both — 24 dB as 8 in the LNA and 16 in the VGA — throws
+    away most of what asking for it was supposed to buy."""
     if gain_db < 0:
         return 0, 0
     gain_db = min(gain_db, 102)
-    lna = min(40, 8 * (int(gain_db) // 18))
+    lna = min(40, 8 * (int(gain_db) // 8))
     vga = min(62, 2 * ((int(gain_db) - lna) // 2))
     return lna, vga
 
