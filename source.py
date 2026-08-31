@@ -441,12 +441,22 @@ class SpectrumSource:
         """Seconds of signal in one FFT frame — the finest band resolution"""
         return self.fft_size / self.sample_rate
 
+    @property
+    def stream_start(self):
+        """The clock time the stream began, or None before it has
+
+        Band readings are stamped in seconds from here rather than in seconds
+        from 1970, so that their spacing survives being written down. This is
+        what puts them back on a wall clock."""
+        return self._stream_start
+
     def take_band_power(self):
         """Take the band samples gathered since the last call
 
         Returns an (N, 2) array of time and power in dB, oldest first, or None
-        if there are none. Draining in bulk rather than calling back per
-        sample keeps a thousand-odd readings a second off the reader's thread."""
+        if there are none. Times are seconds since stream_start. Draining in
+        bulk rather than calling back per sample keeps a thousand-odd readings
+        a second off the reader's thread."""
         samples = self._band_samples
         taken = []
         try:
@@ -558,7 +568,14 @@ class SpectrumSource:
         # as far in the past as the radio had been running - so it fell
         # outside every window drawn and the pane went back to the delivered
         # sweeps without saying so.
-        start = (self._stream_start + self._lost_seconds
+        # Counted from the start of the stream, not from the epoch. Absolute
+        # Unix time in a float is quantised to 2**-22 s in this decade — 0.24
+        # us, a third of a reading at 20 MSPS with 16-point frames — so
+        # stamping readings on that clock loses the very spacing the tap
+        # exists to measure. stream_start says where this zero is; adding it
+        # back is the caller's business, and it is one addition per window
+        # rather than one per reading.
+        start = (self._lost_seconds
                  + begin * self.frame_duration
                  + self._band_readings * step)
         # Stamped at the end of the frames behind it, as spectra are
