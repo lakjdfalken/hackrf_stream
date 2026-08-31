@@ -1,0 +1,15 @@
+# Belongs to the library rather than to the analyser, and travels with it:
+# `git subtree split` puts this at the root of the standalone repository,
+# which otherwise has no .gitignore at all and would sweep up bytecode the
+# moment anyone ran the tests there.
+
+__pycache__/
+*.py[cod]
+
+build/
+dist/
+*.egg-info/
+
+.pytest_cache/
+.tox/
+.coverage
