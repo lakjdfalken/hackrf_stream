@@ -86,10 +86,22 @@ git remote add origin https://github.com/lakjdfalken/hackrf_stream.git
 ```
 
 The split keeps every commit that touched the package and nothing else, and
-puts `pyproject.toml`, `README.md` and `LICENSE` at the root where a build
-expects them; the one commit after it moves the modules into the package
-directory. `git subtree split` is deterministic, so a later export produces the
-same history again with the new commits on the end.
+puts `pyproject.toml`, `README.md`, `LICENSE` and `.gitignore` at the root
+where a build expects them; the one commit after it moves the modules into the
+package directory.
+
+`git subtree split` is deterministic, so a re-export reproduces the same
+commits with the new ones on the end — but the commit that moves the modules
+is then rebuilt on a different parent and gets a new hash, so **the push is a
+force-push**:
+
+```sh
+git push --force-with-lease origin main
+```
+
+That is why nothing may be committed here directly: a force-push is a
+regeneration, and anything that only ever existed in this repository is gone.
+One branch, one direction, no exceptions.
 
 ## Licence
 
