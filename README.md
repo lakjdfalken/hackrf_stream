@@ -45,6 +45,16 @@ The receiver's own carrier lands in the middle of the band when tuned this way,
 so the centre bins are interpolated across rather than shown as a peak that is
 not on the air. Set `dc_bins=0` to see it.
 
+## Testing
+
+```
+python -m hackrf_stream.tests
+```
+
+No radio, no libhackrf and no test runner needed — they check the maths that
+decides what a measurement means, and they are shipped in the wheel so that a
+copy can always be checked where it is installed. pytest finds them too.
+
 ## Requirements
 
 - Python 3.9+
@@ -53,6 +63,32 @@ not on the air. Set `dc_bins=0` to see it.
   (`brew install hackrf`, `apt install libhackrf0`)
 
 Nothing is bundled: libhackrf is loaded from wherever the platform put it.
+
+## Exporting this package
+
+It is developed inside [QSpectrumAnalyzer](https://github.com/lakjdfalken/qspectrumanalyzer)
+and exported from there, so this repository is a product rather than a place
+to work: **commit to the analyser, not here.** Anything committed here is lost
+at the next export.
+
+From a clone of the analyser:
+
+```sh
+git subtree split --prefix=hackrf_stream -b export-hackrf-stream
+git clone -b export-hackrf-stream --single-branch . ../hackrf_stream
+cd ../hackrf_stream
+mkdir hackrf_stream
+git mv __init__.py _libhackrf.py dsp.py source.py tests hackrf_stream/
+git commit -m "Put the package in its own directory"
+python -m hackrf_stream.tests
+git remote add origin https://github.com/lakjdfalken/hackrf_stream.git
+```
+
+The split keeps every commit that touched the package and nothing else, and
+puts `pyproject.toml`, `README.md` and `LICENSE` at the root where a build
+expects them; the one commit after it moves the modules into the package
+directory. `git subtree split` is deterministic, so a later export produces the
+same history again with the new commits on the end.
 
 ## Licence
 

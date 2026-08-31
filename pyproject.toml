@@ -1,0 +1,43 @@
+# Packaging for hackrf_stream on its own.
+#
+# It lives beside the package rather than at the root of this repository
+# because the library is still developed inside QSpectrumAnalyzer and exported
+# from it; the export moves this file, the README and the LICENCE up to the
+# root of the standalone repository. See README.md, "Exporting this package".
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hackrf_stream"
+version = "0.1.0"
+description = "Fast power spectra from a HackRF held on one frequency"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "lakjdfalken" }]
+keywords = ["hackrf", "sdr", "spectrum", "radar", "dsp", "zero-span"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Communications :: Ham Radio",
+    "Topic :: Scientific/Engineering",
+]
+# libhackrf is a system library, loaded from wherever the platform put it. It
+# is GPL-2.0-or-later, nothing here bundles it, and it cannot be a dependency
+# resolved by pip.
+dependencies = ["numpy>=1.20"]
+
+[project.urls]
+Homepage = "https://github.com/lakjdfalken/hackrf_stream"
+Source = "https://github.com/lakjdfalken/hackrf_stream"
+Issues = "https://github.com/lakjdfalken/hackrf_stream/issues"
+
+[tool.setuptools]
+# The tests go in the wheel on purpose: they need no radio and no test runner,
+# so `python -m hackrf_stream.tests` is how someone checks their copy works.
+packages = ["hackrf_stream", "hackrf_stream.tests"]

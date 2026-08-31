@@ -212,3 +212,28 @@ def test_noise_ceiling_rises_with_the_number_of_readings():
 def test_noise_ceiling_survives_a_degenerate_window():
     flat = np.full(256, -40.0)                 # every reading identical
     assert np.isfinite(dsp.noise_ceiling(flat, 1000))
+
+
+# -- the package itself ---------------------------------------------------
+
+def test_the_version_is_stated_once_and_agreed_on():
+    # It is written in two places that cannot import each other: __init__ for
+    # anyone who has the package, and pyproject for anyone installing it. A
+    # test is the only thing that stops them drifting apart.
+    import os
+    from .. import __version__
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for candidate in (os.path.join(root, "pyproject.toml"),
+                      os.path.join(os.path.dirname(root), "pyproject.toml")):
+        if os.path.exists(candidate):
+            break
+    else:
+        return                                # installed without it; nothing to check
+    try:
+        import tomllib
+    except ImportError:                       # Python 3.9 and 3.10
+        return
+    with open(candidate, "rb") as handle:
+        stated = tomllib.load(handle)["project"]["version"]
+    assert stated == __version__, (stated, __version__)
