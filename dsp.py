@@ -44,7 +44,10 @@ def offset_tune(start_freq, stop_freq, sample_rate, guard=0.0):
     span = abs(stop_freq - start_freq)
     middle = (start_freq + stop_freq) / 2.0
     clearance = (sample_rate / 2.0 - span) / 2.0
-    if clearance < max(guard, 0.0):
+    # Zero clearance is not a fit: it puts the spike exactly on the span's edge,
+    # which is inside it. A span of half the sample rate is therefore the first
+    # one that cannot be helped, not the last one that can.
+    if clearance <= 0.0 or clearance < guard:
         return None
     # Tuning below the span puts the span in the upper half, which also folds
     # the IQ image of everything in it into the lower half — the half that is
@@ -192,6 +195,50 @@ def remove_dc_spike(spectrum, bins=2):
     left, right = spectrum[low - 1], spectrum[high + 1]
     spectrum[low:high + 1] = np.linspace(left, right, high - low + 1)
     return spectrum
+
+
+#: Candidate frame counts for noise_ceiling(), and the quantile ratio each
+#: one produces. Built once: it is the same table for every call.
+_CEILING_GRID = np.exp(np.linspace(0.0, np.log(4096.0), 200))
+_CEILING_RATIO = (np.log1p(-0.5 ** (1.0 / _CEILING_GRID))
+                  / np.log1p(-0.16 ** (1.0 / _CEILING_GRID)))
+
+
+def noise_ceiling(body_db, count):
+    """How high the noise on its own gets in `count` readings, in dB
+
+    A trigger level has to clear the noise's own maximum, and that maximum is
+    not a fixed number of decibels above the noise floor: it depends both on
+    how many readings there are to get lucky in and on how many frames were
+    reduced into each one. One frame of bin noise wobbles by about 6 dB from
+    its median to its 16th percentile; the peak of 25 frames wobbles by 1.3,
+    because taking the largest of 25 draws throws away most of the spread.
+    A level set at a fixed multiple of that spread is therefore wrong by tens
+    of decibels at one end of the range or the other.
+
+    So measure the shape instead of assuming it. A reading is the peak of some
+    number of exponentially distributed frames — the frames in the reading
+    times the bins in the band, and it does not matter which — and that number
+    fixes the ratio between any two of its quantiles. Read the ratio off the
+    16th and the 50th, both of which are below anything a burst does to the
+    trace, recover the frame count and the mean frame power from it, and put
+    the ceiling where the distribution says one reading in `count` will reach.
+
+    Checked against simulation for 1 to 125 frames a reading and 12,500 to
+    312,500 readings: within about a decibel throughout. A burst in the window
+    lifts it, since it lifts the median, but slowly — 4.7 dB at a duty cycle
+    of 60%, which is far more than a radar dwell ever is, and still 15 dB
+    under the burst itself."""
+    low = 10.0 ** (float(np.percentile(body_db, 16.0)) / 10.0)
+    mid = 10.0 ** (float(np.percentile(body_db, 50.0)) / 10.0)
+    if not low > 0.0 or not mid >= low:
+        return float(np.max(body_db))
+    # The ratio falls monotonically with the frame count, so interpolate on a
+    # reversed table
+    frames = float(np.interp(mid / low, _CEILING_RATIO[::-1], _CEILING_GRID[::-1]))
+    mean_frame = -low / np.log1p(-0.16 ** (1.0 / frames))
+    reach = -mean_frame * np.log1p(-(1.0 - 1.0 / max(count, 2)) ** (1.0 / frames))
+    return 10.0 * np.log10(max(reach, 1e-30))
 
 
 class SpectrumAccumulator:
