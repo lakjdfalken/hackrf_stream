@@ -74,6 +74,7 @@ at the next export.
 From a clone of the analyser:
 
 ```sh
+git branch -D export-hackrf-stream 2>/dev/null   # subtree split will not reuse it
 git subtree split --prefix=hackrf_stream -b export-hackrf-stream
 git clone -b export-hackrf-stream --single-branch . ../hackrf_stream
 cd ../hackrf_stream
