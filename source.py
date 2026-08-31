@@ -122,8 +122,8 @@ class SpectrumSource:
     """
 
     def __init__(self, center_freq, sample_rate=MAX_SAMPLE_RATE, bin_size=None,
-                 fft_size=None, average=26, gain=40, amp=False, antenna_power=False,
-                 window="hann", dc_bins=2, serial=None, mode="mean"):
+                 fft_size=None, average=26, gain=40, lna=None, vga=None, amp=False,
+                 antenna_power=False, window="hann", dc_bins=None, serial=None, mode="mean"):
         if not MIN_SAMPLE_RATE <= sample_rate <= MAX_SAMPLE_RATE:
             raise ValueError("sample_rate must be between {:g} and {:g} Hz".format(
                 MIN_SAMPLE_RATE, MAX_SAMPLE_RATE))
@@ -136,7 +136,10 @@ class SpectrumSource:
         self.sample_rate = float(sample_rate)
         self.fft_size = int(fft_size)
         self.average = int(average)
-        self.gain = gain
+        #: The two analogue stages, settled here rather than at the radio, so
+        #: that a caller can read back what it is actually about to get
+        self.lna, self.vga = dsp.stage_gains(gain, lna, vga)
+        self.gain = self.lna + self.vga
         self.amp = amp
         self.antenna_power = antenna_power
         self.serial = serial
@@ -152,6 +155,11 @@ class SpectrumSource:
         self.mode = mode
         self._accumulator = dsp.SpectrumAccumulator(self.fft_size, self.average, window,
                                                     dc_bins, mode)
+
+        #: The baseband filter the radio was actually put to, once it is open.
+        #: Chosen from the sample rate, and not the same as it: what reaches
+        #: the FFT is limited by this, not by the span the bins cover.
+        self.filter_bandwidth = None
 
         self._lib = None
         self._device = None
@@ -215,11 +223,11 @@ class SpectrumSource:
         bandwidth = lib.hackrf_compute_baseband_filter_bw(int(0.75 * self.sample_rate))
         check(lib, lib.hackrf_set_baseband_filter_bandwidth(device, bandwidth),
               "set_baseband_filter_bandwidth")
+        self.filter_bandwidth = float(bandwidth)
         check(lib, lib.hackrf_set_freq(device, int(self.center_freq)), "set_freq")
 
-        lna, vga = dsp.split_gain(self.gain)
-        check(lib, lib.hackrf_set_lna_gain(device, lna), "set_lna_gain")
-        check(lib, lib.hackrf_set_vga_gain(device, vga), "set_vga_gain")
+        check(lib, lib.hackrf_set_lna_gain(device, self.lna), "set_lna_gain")
+        check(lib, lib.hackrf_set_vga_gain(device, self.vga), "set_vga_gain")
         check(lib, lib.hackrf_set_amp_enable(device, 1 if self.amp else 0), "set_amp_enable")
         check(lib, lib.hackrf_set_antenna_enable(device, 1 if self.antenna_power else 0),
               "set_antenna_enable")
@@ -361,6 +369,53 @@ class SpectrumSource:
         self._band_resolution = group * frame
         self._band_detector = detector
 
+    def set_gain(self, lna=None, vga=None, amp=None):
+        """Change the analogue gain while the radio is running
+
+        All three are control transfers the radio accepts mid-stream, so this
+        takes effect on the next samples rather than at the next restart.
+        That matters more than it sounds: gain is the control you reach for
+        when a signal will not show, and a control that silently does nothing
+        until the run is restarted reads exactly like a signal that is not
+        there. Whatever is left None is not touched.
+
+        Returns the (lna, vga, amp) actually in force, with the stages rounded
+        down to steps the radio has."""
+        if lna is not None or vga is not None:
+            self.lna, self.vga = dsp.stage_gains(
+                -1, self.lna if lna is None else lna,
+                self.vga if vga is None else vga)
+            self.gain = self.lna + self.vga
+        if amp is not None:
+            self.amp = bool(amp)
+
+        device, lib = self._device, self._lib
+        if device is not None and lib is not None:
+            if lna is not None or vga is not None:
+                check(lib, lib.hackrf_set_lna_gain(device, self.lna), "set_lna_gain")
+                check(lib, lib.hackrf_set_vga_gain(device, self.vga), "set_vga_gain")
+            if amp is not None:
+                check(lib, lib.hackrf_set_amp_enable(device, 1 if self.amp else 0),
+                      "set_amp_enable")
+        return self.lna, self.vga, self.amp
+
+    @property
+    def dc_bins(self):
+        """Bins either side of the centre being flattened, as settled on"""
+        return self._accumulator.dc_bins
+
+    @property
+    def dc_band(self):
+        """Where the receiver's own carrier is, as (low, high) in hertz
+
+        Always there and always at the centre of the tune, whether or not the
+        delivered spectra have it flattened. Worth asking for separately from
+        dc_bins because the band tap reads raw bins: a zero span watch pointed
+        here is measuring the radio rather than the air, and nothing about the
+        reading says so."""
+        half = (max(self.dc_bins, 0) + 0.5) * self.bin_size
+        return (self.center_freq - half, self.center_freq + half)
+
     @property
     def band(self):
         """The band actually being watched, snapped to bin edges"""
@@ -494,9 +549,17 @@ class SpectrumSource:
         # stopping the radio.
         step = self._band_resolution
         readings = self._accumulator.take_band()
-        if readings is None or step is None:
+        begin = self._accumulator.band_start_frame
+        if readings is None or step is None or begin is None:
             return
+        # From where this band began, not from where the stream did. Pointing
+        # the tap somewhere else starts its readings again from zero, and
+        # counting those from the start of the stream stamped the whole trace
+        # as far in the past as the radio had been running - so it fell
+        # outside every window drawn and the pane went back to the delivered
+        # sweeps without saying so.
         start = (self._stream_start + self._lost_seconds
+                 + begin * self.frame_duration
                  + self._band_readings * step)
         # Stamped at the end of the frames behind it, as spectra are
         times = start + np.arange(1, len(readings) + 1) * step
@@ -562,6 +625,18 @@ class SpectrumSource:
     def queue_peak(self):
         """The deepest the block queue has been, out of QUEUE_DEPTH"""
         return self._queue_peak
+
+    def take_queue_peak(self):
+        """The deepest the queue has been since this was last asked
+
+        Reset on reading. A peak that is never forgotten reports the first
+        seconds of a run — when the display is building a waterfall, filling
+        curves and warming its caches — for as long as the radio stays open,
+        so every message minutes later blames a stall that happened once at
+        the start and has not happened since."""
+        peak = self._queue_peak
+        self._queue_peak = 0
+        return peak
 
     @property
     def transfer_seconds(self):

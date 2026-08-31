@@ -23,6 +23,43 @@ def frequencies(center_freq, sample_rate, fft_size):
     return np.fft.fftshift(np.fft.fftfreq(fft_size, 1.0 / sample_rate)) + center_freq
 
 
+def offset_tune(start_freq, stop_freq, sample_rate, guard=0.0):
+    """Where to tune so a requested span misses the receiver's DC spike
+
+    The spike sits at the centre of the tune because that is what the centre
+    of the tune is: zero hertz at baseband, where the receiver's own DC offset
+    lands. The only way to keep it out of a span is to put the whole span on
+    one side of the centre, so this works when the span is less than half the
+    sample rate and not otherwise — no offset helps a wider one, since half of
+    it is always on the far side of the centre.
+
+    When it fits, the span goes in the middle of one half of the passband.
+    That leaves it the same clearance from the spike as from the anti-alias
+    filter's roll-off at the edge, which is the most that both can be given at
+    once. `guard` is the least clearance worth having, in hertz: below it the
+    offset is not worth the half of the tune it spends.
+
+    Returns the centre frequency to tune to, or None when the span cannot be
+    moved clear and the spike has to be flattened where it falls instead."""
+    span = abs(stop_freq - start_freq)
+    middle = (start_freq + stop_freq) / 2.0
+    clearance = (sample_rate / 2.0 - span) / 2.0
+    if clearance < max(guard, 0.0):
+        return None
+    # Tuning below the span puts the span in the upper half, which also folds
+    # the IQ image of everything in it into the lower half — the half that is
+    # being thrown away regardless
+    return middle - sample_rate / 4.0
+
+
+#: The RF amp ahead of the receiver, when it is switched on
+AMP_GAIN_DB = 14
+
+#: What each analogue stage can be turned up to
+LNA_MAX_DB = 40
+VGA_MAX_DB = 62
+
+
 def split_gain(gain_db):
     """Split one gain figure across the HackRF's two analogue stages
 
@@ -38,10 +75,97 @@ def split_gain(gain_db):
     away most of what asking for it was supposed to buy."""
     if gain_db < 0:
         return 0, 0
-    gain_db = min(gain_db, 102)
-    lna = min(40, 8 * (int(gain_db) // 8))
-    vga = min(62, 2 * ((int(gain_db) - lna) // 2))
+    gain_db = min(gain_db, LNA_MAX_DB + VGA_MAX_DB)
+    lna = min(LNA_MAX_DB, 8 * (int(gain_db) // 8))
+    vga = min(VGA_MAX_DB, 2 * ((int(gain_db) - lna) // 2))
     return lna, vga
+
+
+def stage_gains(gain_db=-1, lna=None, vga=None):
+    """The two stage settings to use, from a total or from the stages themselves
+
+    A stage given explicitly is used as it stands, rounded down to a step the
+    radio actually has; whatever is left None comes from splitting the single
+    gain figure with split_gain(). So a caller that only knows "40 dB" gets the
+    LNA filled first, and one that has been told what each stage should be gets
+    exactly that."""
+    split_lna, split_vga = split_gain(gain_db)
+    if lna is not None:
+        split_lna = min(LNA_MAX_DB, 8 * (max(0, int(lna)) // 8))
+    if vga is not None:
+        split_vga = min(VGA_MAX_DB, 2 * (max(0, int(vga)) // 2))
+    return split_lna, split_vga
+
+
+def describe_gain(lna, vga, amp=False):
+    """Say in words what the gain settings do to the radio, as lines of text
+
+    One gain figure in an interface hides three stages that are not
+    interchangeable, so "40 dB" can mean the LNA is already full and every
+    further dB would be spent at baseband. Report the split, and say where
+    anything left has to come from."""
+    front = (AMP_GAIN_DB if amp else 0) + lna
+
+    lines = ['RF amp {} + LNA {} of {} dB (IF) + VGA {} of {} dB (baseband) '
+             '= {} dB in all'
+             .format('on (+{} dB)'.format(AMP_GAIN_DB) if amp else 'off',
+                     lna, LNA_MAX_DB, vga, VGA_MAX_DB, front + vga)]
+
+    # What is still unspent, in the order worth spending it: the amp and the
+    # LNA both decide what the receiver can hear, the VGA only makes the trace
+    # bigger.
+    headroom = []
+    if not amp:
+        headroom.append('the RF amp is off, and its {} dB sit in front of everything else'
+                        .format(AMP_GAIN_DB))
+    if lna < LNA_MAX_DB:
+        headroom.append('{} dB of LNA is unspent, which is the gain that makes the '
+                        'radio hear more'.format(LNA_MAX_DB - lna))
+    elif vga < VGA_MAX_DB:
+        # Baseband gain does not make the radio hear anything it could not
+        # hear already — but at VGA 0 a quiet band can land so low in the
+        # 8 bit ADC that quantisation, not the air, sets the floor. The test
+        # is whether the floor follows the gain: raise it 6 dB, and if the
+        # noise floor rises 6 dB there was nothing to gain.
+        headroom.append('the LNA is full, so more gain only turns up the VGA, which '
+                        'lifts the noise with the signal'
+                        + (' — worth a try only if the trace sits so low that '
+                           'the 8 bit ADC is what limits it' if vga == 0 else ''))
+    else:
+        headroom.append('every stage is at maximum')
+    lines.append('  ' + '; '.join(headroom))
+    return lines
+
+
+#: How far a windowed DC offset reaches either side of the centre bin
+#:
+#: The receiver's DC offset is a constant added to I and Q, so in the FFT it
+#: is a delta at bin zero and everything either side of it is the analysis
+#: window's own shape. That makes the spike's width a property of the window
+#: counted in *bins*, and not a bandwidth in hertz: a Hann window spreads it
+#: over three bins whether those bins are 40 kHz or 1250 kHz wide.
+#:
+#: Measured as the last bin still within 30 dB of the centre, which is where
+#: it stops being tellable from a signal. Hann is 6 dB down at one bin and 32
+#: down at two, so one either side is the whole of it.
+WINDOW_MAINLOBE_BINS = {
+    "boxcar": 0,
+    "hann": 1,
+    "hamming": 1,
+    "bartlett": 1,
+    "blackman": 2,
+}
+
+
+def dc_spike_bins(window="hann"):
+    """How many bins either side of the centre the DC spike actually reaches
+
+    Flattening fewer leaves shoulders of the receiver's own carrier standing
+    on either side of the hole. Flattening more throws away measurement for
+    nothing, and at coarse bins it throws away a great deal: one bin too many
+    either side is 2.5 MHz of a 20 MHz span at 1250 kHz bins, so a default
+    that is generous at 40 kHz bins quietly eats an eighth of the band."""
+    return WINDOW_MAINLOBE_BINS.get(window, 1)
 
 
 def remove_dc_spike(spectrum, bins=2):
@@ -51,9 +175,12 @@ def remove_dc_spike(spectrum, bins=2):
     the spectrum, where it shows as a peak that is not on the air and is usually
     the strongest thing on screen. Interpolate across it from its neighbours.
 
-    A wider fix is to tune off to one side and shift back, which is what
-    hackrf_sweep does; this keeps the whole band usable instead of half of it,
-    at the cost of a few bins that are guessed rather than measured."""
+    This is the fallback. offset_tune() moves the spike out of the requested
+    span altogether and measures every bin that is shown; it needs half the
+    tune to spend and so only works for a span under half the sample rate.
+    Where that does not fit, these bins are guessed rather than measured, and
+    the caller should say so on screen rather than draw a straight line and
+    leave it looking like quiet."""
     if bins <= 0:
         return spectrum
 
@@ -90,7 +217,7 @@ class SpectrumAccumulator:
     #: How the frames making up one spectrum may be combined
     MODES = ("mean", "peak")
 
-    def __init__(self, fft_size, average, window="hann", dc_bins=2, mode="mean"):
+    def __init__(self, fft_size, average, window="hann", dc_bins=None, mode="mean"):
         if average < 1:
             raise ValueError("average must be at least 1")
         if mode not in self.MODES:
@@ -98,7 +225,9 @@ class SpectrumAccumulator:
                 mode, ", ".join(self.MODES)))
         self.fft_size = fft_size
         self.average = average
-        self.dc_bins = dc_bins
+        #: Bins either side of the centre to flatten. None means let the
+        #: window decide, which is the only thing that knows the answer
+        self.dc_bins = dc_spike_bins(window) if dc_bins is None else dc_bins
         self.mode = mode
         self.window = _window(window, fft_size)
         # Coherent gain, so a full scale sine reads 0 dBFS whatever the window.
@@ -115,6 +244,7 @@ class SpectrumAccumulator:
         self._band_detector = "peak"
         self._band_carry = None
         self._band_out = []
+        self._band_start_frame = None
         # What one frame's power has to be divided by for 0 dBFS to be a full
         # scale sine, the single frame case of the scale _finish() works out
         self._frame_scale = (self._window_gain * 127.0) ** 2
@@ -159,12 +289,26 @@ class SpectrumAccumulator:
         self._band_detector = detector
         self._band_carry = None
         self._band_out = []
+        self._band_start_frame = None
 
     def clear_band(self):
         """Stop watching a band"""
         self._band_index = None
         self._band_carry = None
         self._band_out = []
+        self._band_start_frame = None
+
+    @property
+    def band_start_frame(self):
+        """Frame of the stream the current band began at, None before it has
+
+        A band can be pointed somewhere else long after the radio started, and
+        its readings are counted from where it began rather than from the
+        start of the stream. Without this the caller has no way to say when
+        the first of them was measured, and stamping them from the stream
+        start puts the whole trace as far into the past as the radio has been
+        running."""
+        return self._band_start_frame
 
     def take_band(self):
         """Band readings finished since the last call, in dB, oldest first"""
@@ -180,6 +324,11 @@ class SpectrumAccumulator:
         Vectorised over the whole block, so the cost does not depend on how
         many readings come out of it: at 20 MSPS a transfer is a couple of
         hundred frames and the band is a handful of bins wide."""
+        if self._band_start_frame is None:
+            # This block is the first the band has seen: ffts has already
+            # counted it, so the band begins where the block does
+            self._band_start_frame = self.ffts - power.shape[0]
+
         values = power[:, self._band_index].max(axis=1)
         if self._band_carry is not None:
             values = np.concatenate((self._band_carry, values))

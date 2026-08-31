@@ -19,15 +19,18 @@ bundles it.
 """
 
 from ._libhackrf import HackRFError
-from .dsp import (SpectrumAccumulator, fast_fft_size, frequencies,
-                  remove_dc_spike, split_gain)
+from .dsp import (AMP_GAIN_DB, LNA_MAX_DB, VGA_MAX_DB, WINDOW_MAINLOBE_BINS,
+                  SpectrumAccumulator, dc_spike_bins, describe_gain,
+                  fast_fft_size, frequencies, offset_tune, remove_dc_spike,
+                  split_gain, stage_gains)
 from .source import (BAND_BACKLOG, MAX_SAMPLE_RATE, MIN_SAMPLE_RATE,
                      SpectrumSource, devices, library_version)
 
 __version__ = "0.1.0"
 __all__ = [
     "HackRFError", "SpectrumAccumulator", "SpectrumSource",
-    "BAND_BACKLOG", "MAX_SAMPLE_RATE", "MIN_SAMPLE_RATE",
-    "devices", "fast_fft_size", "frequencies", "library_version", "remove_dc_spike",
-    "split_gain",
+    "AMP_GAIN_DB", "BAND_BACKLOG", "LNA_MAX_DB", "MAX_SAMPLE_RATE", "MIN_SAMPLE_RATE",
+    "VGA_MAX_DB", "WINDOW_MAINLOBE_BINS",
+    "dc_spike_bins", "describe_gain", "devices", "fast_fft_size", "frequencies",
+    "library_version", "offset_tune", "remove_dc_spike", "split_gain", "stage_gains",
 ]
