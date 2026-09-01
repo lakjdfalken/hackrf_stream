@@ -197,6 +197,52 @@ def test_the_band_detector_decides_whether_a_pulse_survives():
     assert heights["peak"] > heights["mean"] + 9.0, heights
 
 
+def test_total_beats_peak_on_a_chirp_that_fills_the_band():
+    """What "total" is for, and how much it is actually worth
+
+    Peak keeps the loudest bin. For a chirp - a pulse-compression radar's
+    waveform - every bin in the sweep holds about the same power, so the
+    loudest bin is no better than any other and peak gains nothing from the
+    band being wide: it measures the same level whether one bin is watched or
+    thirty. Adding the bins instead lets the signal grow while the noise
+    across them averages, which is worth a few decibels and no more. Measured
+    here at about 3 dB with the band matched to the pulse, and it turns
+    negative once the band is much wider than the signal, which is why this
+    checks both.
+    """
+    fft, blocks, sig_bins = 64, 400, 16
+
+    def margin(detector, watch):
+        def run(amp):
+            rng = np.random.default_rng(7)
+            acc = dsp.SpectrumAccumulator(fft, 1, dc_bins=0)
+            acc.set_band(fft // 2 - watch // 2, fft // 2 + max(1, watch // 2),
+                         group=1, detector=detector)
+            x = (rng.normal(0, 4, fft * blocks) + 1j * rng.normal(0, 4, fft * blocks))
+            if amp:
+                t = np.arange(fft)
+                x[:fft] += amp * np.exp(1j * np.pi * (sig_bins / float(fft))
+                                        * (t - fft / 2.0) ** 2 / fft)
+            list(acc.feed(interleave(x)))
+            return np.asarray(acc.take_band(), dtype=float)
+        return run(30.0)[0] - run(0.0)[1:].max()
+
+    matched = margin("total", 8) - margin("peak", 8)
+    assert matched > 2.0, matched
+    # and the other way round when the band is much wider than the pulse
+    assert margin("total", 32) - margin("peak", 32) < matched, "wide band should not help"
+
+
+def test_an_unknown_band_detector_is_still_refused_after_total_was_added():
+    acc = dsp.SpectrumAccumulator(32, 4, dc_bins=0)
+    assert "total" in acc.DETECTORS
+    try:
+        acc.set_band(10, 12, detector="sum")
+    except ValueError:
+        return
+    raise AssertionError("'sum' is not a detector and should not be accepted")
+
+
 def test_clearing_the_band_stops_the_readings():
     fft = 32
     acc = dsp.SpectrumAccumulator(fft, 4, dc_bins=0)

@@ -24,15 +24,16 @@ from .dsp import (AMP_GAIN_DB, LNA_MAX_DB, VGA_MAX_DB, WINDOW_MAINLOBE_BINS,
                   fast_fft_size, frequencies, noise_ceiling, offset_tune,
                   remove_dc_spike,
                   split_gain, stage_gains)
-from .source import (BAND_BACKLOG, MAX_SAMPLE_RATE, MIN_SAMPLE_RATE,
-                     SpectrumSource, devices, library_version)
+from .source import (BAND_BACKLOG, FILTER_BANDWIDTHS, MAX_SAMPLE_RATE,
+                     MIN_SAMPLE_RATE, SpectrumSource, baseband_filter_bw,
+                     devices, library_version)
 
 __version__ = "0.1.0"
 __all__ = [
     "HackRFError", "SpectrumAccumulator", "SpectrumSource",
-    "AMP_GAIN_DB", "BAND_BACKLOG", "LNA_MAX_DB", "MAX_SAMPLE_RATE", "MIN_SAMPLE_RATE",
+    "AMP_GAIN_DB", "BAND_BACKLOG", "FILTER_BANDWIDTHS", "LNA_MAX_DB", "MAX_SAMPLE_RATE", "MIN_SAMPLE_RATE",
     "VGA_MAX_DB", "WINDOW_MAINLOBE_BINS",
-    "dc_spike_bins", "describe_gain", "devices", "fast_fft_size", "frequencies",
+    "baseband_filter_bw", "dc_spike_bins", "describe_gain", "devices", "fast_fft_size", "frequencies",
     "library_version", "noise_ceiling", "offset_tune", "remove_dc_spike",
     "split_gain", "stage_gains",
 ]

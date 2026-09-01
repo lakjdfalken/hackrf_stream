@@ -23,7 +23,7 @@ def frequencies(center_freq, sample_rate, fft_size):
     return np.fft.fftshift(np.fft.fftfreq(fft_size, 1.0 / sample_rate)) + center_freq
 
 
-def offset_tune(start_freq, stop_freq, sample_rate, guard=0.0):
+def offset_tune(start_freq, stop_freq, sample_rate, guard=0.0, usable=None):
     """Where to tune so a requested span misses the receiver's DC spike
 
     The spike sits at the centre of the tune because that is what the centre
@@ -39,11 +39,21 @@ def offset_tune(start_freq, stop_freq, sample_rate, guard=0.0):
     once. `guard` is the least clearance worth having, in hertz: below it the
     offset is not worth the half of the tune it spends.
 
+    `usable` is how much of the tune the receiver really passes, in hertz -
+    the baseband filter, which is narrower than the sample rate. Left out, the
+    passband is taken to reach Nyquist, which is what a span calculation
+    assumes and what no radio actually does.
+
     Returns the centre frequency to tune to, or None when the span cannot be
     moved clear and the spike has to be flattened where it falls instead."""
     span = abs(stop_freq - start_freq)
     middle = (start_freq + stop_freq) / 2.0
-    clearance = (sample_rate / 2.0 - span) / 2.0
+    # Half of what the receiver actually passes. The anti-alias filter is
+    # narrower than the sample rate - a HackRF at 20 MSPS passes 15 MHz - so
+    # taking Nyquist for the edge puts the top of a wide span in the roll-off,
+    # where it is attenuated and reads as the band going quiet at one end.
+    half = (sample_rate if usable is None else min(usable, sample_rate)) / 2.0
+    clearance = (half - span) / 2.0
     # Zero clearance is not a fit: it puts the spike exactly on the span's edge,
     # which is inside it. A span of half the sample rate is therefore the first
     # one that cannot be helped, not the last one that can.
@@ -52,7 +62,7 @@ def offset_tune(start_freq, stop_freq, sample_rate, guard=0.0):
     # Tuning below the span puts the span in the upper half, which also folds
     # the IQ image of everything in it into the lower half — the half that is
     # being thrown away regardless
-    return middle - sample_rate / 4.0
+    return middle - half / 2.0
 
 
 #: The RF amp ahead of the receiver, when it is switched on
@@ -296,8 +306,8 @@ class SpectrumAccumulator:
         # scale sine, the single frame case of the scale _finish() works out
         self._frame_scale = (self._window_gain * 127.0) ** 2
 
-    #: How the frames making up one band reading may be combined
-    DETECTORS = ("peak", "mean")
+    #: How a band reading may be reduced to one number
+    DETECTORS = ("peak", "mean", "total")
 
     def set_band(self, first, last, group=1, detector="peak"):
         """Watch one band of bins, one reading per `group` frames
@@ -322,7 +332,19 @@ class SpectrumAccumulator:
 
         "mean" averages them, which smooths as the square root of the count —
         3.3 dB at one frame, 0.5 dB at 39 — and is what makes the shape of a
-        signal legible when it is only a few dB out of the noise."""
+        signal legible when it is only a few dB out of the noise.
+
+        "total" is a different question, and it is about the bins rather than
+        the frames. Both of the above take the *loudest bin* in the band and
+        throw the others away, which is right for a carrier sitting in one bin
+        and wrong for a pulse spread across many: it keeps a fraction of the
+        signal and pays a noise floor that rises with every bin added. "total"
+        adds the band's bins up instead, so a pulse that fills the band adds
+        coherently while the noise across the bins averages. The gain over
+        "peak" goes as sqrt(n)*ln(n) — about 10 dB across sixteen bins, which
+        is roughly what a radar detector in a Wi-Fi chipset is doing when it
+        watches a whole channel. Frames are still combined by their peak,
+        because a wideband pulse is usually a short one."""
         first = min(max(int(first), 0), self.fft_size - 1)
         last = min(max(int(last), first + 1), self.fft_size)
         # fftshift moves the upper half of the spectrum to the front, so bin i
@@ -376,7 +398,9 @@ class SpectrumAccumulator:
             # counted it, so the band begins where the block does
             self._band_start_frame = self.ffts - power.shape[0]
 
-        values = power[:, self._band_index].max(axis=1)
+        band = power[:, self._band_index]
+        # "total" adds the bins, everything else keeps the loudest one
+        values = band.sum(axis=1) if self._band_detector == "total" else band.max(axis=1)
         if self._band_carry is not None:
             values = np.concatenate((self._band_carry, values))
             self._band_carry = None
@@ -385,7 +409,9 @@ class SpectrumAccumulator:
         complete = values.shape[0] // group
         if complete:
             frames = values[:complete * group].reshape(complete, group)
-            done = frames.max(axis=1) if self._band_detector == "peak" else frames.mean(axis=1)
+            # peak and total both keep the loudest frame; only mean smooths
+            done = (frames.mean(axis=1) if self._band_detector == "mean"
+                    else frames.max(axis=1))
             self._band_out.append(10.0 * np.log10(done / self._frame_scale + 1e-20))
         rest = values[complete * group:]
         if rest.size:

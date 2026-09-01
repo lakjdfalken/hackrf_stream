@@ -50,6 +50,29 @@ _lib_lock = threading.Lock()
 _open_sources = 0
 
 
+#: The baseband filters a HackRF has, in hertz. libhackrf picks the widest one
+#: no wider than what is asked for, and the radio is asked for three quarters
+#: of the sample rate - so at 20 MSPS the passband is 15 MHz, not the 20 MHz
+#: that Nyquist would suggest. What falls outside it is filter skirt rather
+#: than spectrum, which is why offset_tune() needs to be told: a span placed
+#: by Nyquist alone can sit partly outside the filter and be attenuated there,
+#: which on a plot looks exactly like the band going quiet at one end.
+FILTER_BANDWIDTHS = (1750000.0, 2500000.0, 3500000.0, 5000000.0, 5500000.0,
+                     6000000.0, 7000000.0, 8000000.0, 9000000.0, 10000000.0,
+                     12000000.0, 14000000.0, 15000000.0, 20000000.0,
+                     24000000.0, 28000000.0)
+
+
+def baseband_filter_bw(requested):
+    """The widest filter no wider than `requested`, the way libhackrf chooses
+
+    Pure arithmetic, so it can be known before the radio is opened - which is
+    when the tune has to be settled. The device itself is still configured
+    from libhackrf's own answer; this is for planning the span."""
+    fits = [bw for bw in FILTER_BANDWIDTHS if bw <= requested]
+    return fits[-1] if fits else FILTER_BANDWIDTHS[0]
+
+
 def _library():
     """Load libhackrf once, and call hackrf_init once"""
     global _lib, _open_sources
