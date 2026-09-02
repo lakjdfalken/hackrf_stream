@@ -302,9 +302,22 @@ class SpectrumAccumulator:
         self._band_carry = None
         self._band_out = []
         self._band_start_frame = None
+        # The magnitude tap: the same output queue, read from the samples
+        # instead of the bins. None means it is not running; see set_magnitude
+        self._mag_group = None
+        self._mag_detector = "peak"
+        self._mag_carry = None
+        self._mag_start_pair = None
+        #: I/Q pairs this accumulator has been fed, counted whether or not
+        #: anything is tapping them, so a tap switched on mid-stream knows
+        #: where it began
+        self.pairs_seen = 0
         # What one frame's power has to be divided by for 0 dBFS to be a full
         # scale sine, the single frame case of the scale _finish() works out
         self._frame_scale = (self._window_gain * 127.0) ** 2
+        # The same reference for a single sample, where there is no window and
+        # no FFT: a full scale complex exponential has I*I + Q*Q = 127*127
+        self._sample_scale = 127.0 ** 2
 
     #: How a band reading may be reduced to one number
     DETECTORS = ("peak", "mean", "total")
@@ -353,6 +366,9 @@ class SpectrumAccumulator:
         if detector not in self.DETECTORS:
             raise ValueError("unknown detector {!r}, expected one of {}".format(
                 detector, ", ".join(self.DETECTORS)))
+        # One tap at a time: both write into _band_out, and a reader has no
+        # way to tell a bin reading from a sample reading once they are mixed
+        self.clear_magnitude()
         self._band_index = (np.arange(first, last) + half) % self.fft_size
         self._band_group = max(1, int(group))
         self._band_detector = detector
@@ -367,6 +383,56 @@ class SpectrumAccumulator:
         self._band_out = []
         self._band_start_frame = None
 
+    #: How a magnitude reading may be reduced from the samples behind it.
+    #: "total" is missing on purpose: it is a question about bins, and this
+    #: tap has none
+    MAGNITUDE_DETECTORS = ("peak", "mean")
+
+    def set_magnitude(self, group=1, detector="peak"):
+        """Watch the whole passband in the time domain, `group` samples a reading
+
+        The band tap reduces each *frame* to the loudest of a few bins, so its
+        step can never be shorter than one FFT frame - 0.8 us at 20 MSPS even
+        with the 16 point FFT that is the shortest this library will build.
+        Nothing about the radio requires that: samples arrive every 50 ns, and
+        the frame is a property of the transform rather than of the signal.
+        This reads I*I + Q*Q straight off the samples and skips the transform,
+        which reaches one sample a reading.
+
+        What it gives up is the whole point of the FFT. There are no bins
+        here, so there is no filter: a reading is the power of everything
+        inside the baseband filter at once. That is not an oversight to be
+        fixed later, it is the uncertainty relation - a reading covering t
+        seconds cannot separate frequencies closer than about 1/t, so 50 ns of
+        time resolution and 20 MHz of bandwidth are the same statement. Against
+        a band tap on one 1.25 MHz bin the noise floor rises by about 12 dB,
+        and every other signal in the passband arrives with it.
+
+        So this is the tap for the shape of a pulse in a band already known to
+        be quiet, and the band tap is the one for finding a signal in a band
+        that is not. `detector` combines the samples behind one reading:
+        "peak" keeps a spike shorter than the group, "mean" smooths it."""
+        if detector not in self.MAGNITUDE_DETECTORS:
+            raise ValueError("unknown detector {!r}, expected one of {}".format(
+                detector, ", ".join(self.MAGNITUDE_DETECTORS)))
+        self.clear_band()
+        self._mag_group = max(1, int(group))
+        self._mag_detector = detector
+        self._mag_carry = None
+        self._mag_start_pair = None
+        self._band_out = []
+
+    def clear_magnitude(self):
+        """Stop watching the passband"""
+        self._mag_group = None
+        self._mag_carry = None
+        self._mag_start_pair = None
+
+    @property
+    def magnitude_group(self):
+        """Samples behind one magnitude reading, or None if it is not running"""
+        return self._mag_group
+
     @property
     def band_start_frame(self):
         """Frame of the stream the current band began at, None before it has
@@ -377,6 +443,13 @@ class SpectrumAccumulator:
         the first of them was measured, and stamping them from the stream
         start puts the whole trace as far into the past as the radio has been
         running."""
+        if self._mag_group is not None:
+            # Counted in samples, reported in frames, so that a caller
+            # multiplying by the frame duration gets seconds from either tap
+            # without having to know which one it is reading
+            if self._mag_start_pair is None:
+                return None
+            return self._mag_start_pair / self.fft_size
         return self._band_start_frame
 
     def take_band(self):
@@ -386,6 +459,39 @@ class SpectrumAccumulator:
         taken = np.concatenate(self._band_out) if len(self._band_out) > 1 else self._band_out[0]
         self._band_out = []
         return taken
+
+    def _watch_magnitude(self, fresh):
+        """Reduce this block's samples to magnitude readings
+
+        Vectorised over the whole block for the reason _watch_band() is: at
+        20 MSPS one transfer is 65536 samples, and touching them a row at a
+        time in Python would cost more than the FFTs do."""
+        if self._mag_start_pair is None:
+            self._mag_start_pair = self.pairs_seen
+
+        data = fresh if self._mag_carry is None else \
+            np.concatenate((self._mag_carry, fresh))
+        self._mag_carry = None
+
+        group = self._mag_group
+        complete = (data.size // 2) // group
+        used = complete * group * 2
+        if complete:
+            iq = data[:used].reshape(-1, 2)
+            power = iq[:, 0] * iq[:, 0] + iq[:, 1] * iq[:, 1]
+            groups = power.reshape(complete, group)
+            done = (groups.mean(axis=1) if self._mag_detector == "mean"
+                    else groups.max(axis=1))
+            self._band_out.append(
+                10.0 * np.log10(done / self._sample_scale + 1e-20))
+
+        rest = data[used:]
+        if rest.size:
+            # Samples that did not fill a reading start the next one rather
+            # than being dropped. Carrying also keeps I and Q interleaved: a
+            # block with an odd number of values would otherwise swap the two
+            # for every reading after it, silently and forever.
+            self._mag_carry = rest
 
     def _watch_band(self, power):
         """Reduce this block's frames to band readings
@@ -430,7 +536,15 @@ class SpectrumAccumulator:
         still filling its next buffer, so it is written to touch the data as
         few times as possible: no per-frame Python, and no temporary that only
         exists to be thrown away."""
-        block = samples.astype(np.float32)
+        fresh = samples.astype(np.float32)
+        # Before the tail is joined on, so that every sample is measured
+        # exactly once: the tail is samples an earlier call already saw and is
+        # holding back until they can fill a frame
+        if self._mag_group is not None:
+            self._watch_magnitude(fresh)
+        self.pairs_seen += fresh.size // 2
+
+        block = fresh
         if self._tail.size:
             block = np.concatenate((self._tail, block))
 
@@ -512,6 +626,7 @@ class SpectrumAccumulator:
         self._tail = np.empty(0, dtype=np.float32)
         self._acc, self._count = None, 0
         self._band_carry = None
+        self._mag_carry = None
         self._band_out = []
 
 

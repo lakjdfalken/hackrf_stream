@@ -208,6 +208,8 @@ class SpectrumSource:
         self._band_range = None
         self._band_resolution = None
         self._band_detector = None
+        #: True while the tap reads samples rather than bins; see set_band()
+        self._band_magnitude = False
         self._band_readings = 0
         self._band_error = None
         self._band_samples = collections.deque(maxlen=BAND_BACKLOG)
@@ -367,8 +369,10 @@ class SpectrumSource:
         stop watching."""
         if low_hz is None or high_hz is None:
             self._accumulator.clear_band()
+            self._accumulator.clear_magnitude()
             self._band_range = self._band_resolution = None
             self._band_detector = None
+            self._band_magnitude = False
             self._band_samples.clear()
             self._band_readings = 0
             return
@@ -382,6 +386,26 @@ class SpectrumSource:
         last = min(max(last, first + 1), self.fft_size)
 
         frame = self.fft_size / self.sample_rate
+
+        if resolution and float(resolution) < frame:
+            # Finer than one frame, which no bin size can deliver: the frame
+            # is fft_size/sample_rate and the FFT bottoms out at 16 points.
+            # Read the samples instead. This ignores the band it was given -
+            # there are no bins to select with - so the caller is told through
+            # band_magnitude and band(), which then name the whole passband.
+            group = max(1, int(round(float(resolution) * self.sample_rate)))
+            # "total" is a question about bins, and there are none here
+            detector = "peak" if detector == "total" else detector
+            self._band_samples.clear()
+            self._band_readings = 0
+            self._accumulator.set_magnitude(group, detector)
+            self._band_range = (float(self.frequencies[0]),
+                                float(self.frequencies[-1]))
+            self._band_resolution = group / self.sample_rate
+            self._band_detector = detector
+            self._band_magnitude = True
+            return
+
         group = 1 if not resolution else max(1, int(round(float(resolution) / frame)))
 
         self._band_samples.clear()
@@ -391,6 +415,7 @@ class SpectrumSource:
                             float(self.frequencies[last - 1]))
         self._band_resolution = group * frame
         self._band_detector = detector
+        self._band_magnitude = False
 
     def set_gain(self, lna=None, vga=None, amp=None):
         """Change the analogue gain while the radio is running
@@ -453,6 +478,15 @@ class SpectrumSource:
     def band_resolution(self):
         """Seconds each band reading covers, or None when not watching"""
         return self._band_resolution
+
+    @property
+    def band_magnitude(self):
+        """True while the tap is reading samples rather than bins
+
+        Worth asking before believing band(): a magnitude tap measures the
+        whole passband whatever band was requested, so a caller that reports
+        the requested band would be describing a filter that is not there."""
+        return self._band_magnitude
 
     @property
     def band_detector(self):

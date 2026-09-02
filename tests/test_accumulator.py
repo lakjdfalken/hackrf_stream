@@ -271,3 +271,114 @@ def test_an_unknown_band_detector_is_refused():
     except ValueError:
         return
     raise AssertionError("an unknown detector should not be accepted")
+
+
+# -- the magnitude tap ----------------------------------------------------
+#
+# The band tap cannot step finer than one FFT frame, because a frame is what
+# it reduces. These check that reading the samples instead really does reach
+# below that, and that it still means dBFS when it gets there.
+
+def pulse(n, start, length, amplitude=127.0):
+    """Silence with one burst of full scale carrier in the middle of it"""
+    signal = np.zeros(n, dtype=complex)
+    signal[start:start + length] = amplitude
+    return signal
+
+
+def readings(acc, block):
+    """Feed a block and take whatever the tap finished, as a flat array"""
+    list(acc.feed(block))                       # spectra are not what is asked here
+    taken = acc.take_band()
+    return np.empty(0) if taken is None else taken
+
+
+def test_a_full_scale_carrier_reads_zero_dbfs_on_the_magnitude_tap():
+    # The same reference as the FFT path, so the two taps can be compared
+    acc = dsp.SpectrumAccumulator(16, 4, dc_bins=0)
+    acc.set_magnitude(1)
+    out = readings(acc, interleave(np.full(64, 127.0 + 0j)))
+    assert len(out) == 64, len(out)
+    assert abs(out.max()) < 0.1, out.max()
+
+
+def test_the_tap_reaches_one_sample_where_the_frame_tap_cannot():
+    # A pulse four samples long inside a 16 point frame. The band tap reduces
+    # whole frames, so it cannot say where in the frame the pulse was; this
+    # says which four samples it was.
+    fft = 16
+    acc = dsp.SpectrumAccumulator(fft, 4, dc_bins=0)
+    acc.set_magnitude(1)
+    out = readings(acc, interleave(pulse(64, 20, 4)))
+    loud = np.flatnonzero(out > -20.0)
+    assert list(loud) == [20, 21, 22, 23], loud
+
+
+def test_grouping_sets_the_step_and_peak_keeps_a_pulse_the_mean_spreads():
+    # One sample of signal in every eight. Peak reports it at full height,
+    # the mean divides it by the eight samples behind the reading - 9 dB.
+    for detector, expected in (("peak", 0.0), ("mean", -10 * np.log10(8))):
+        acc = dsp.SpectrumAccumulator(16, 4, dc_bins=0)
+        acc.set_magnitude(8, detector)
+        out = readings(acc, interleave(pulse(64, 8, 1)))
+        assert len(out) == 8, (detector, len(out))
+        assert abs(out[1] - expected) < 0.1, (detector, out[1], expected)
+
+
+def test_no_sample_is_lost_or_counted_twice_across_blocks():
+    # The pulse straddles a block boundary, and the group does not divide the
+    # block. Both edges are where the carry has to be right.
+    acc = dsp.SpectrumAccumulator(16, 4, dc_bins=0)
+    acc.set_magnitude(3)
+    signal = pulse(90, 40, 6)
+    out = np.concatenate((readings(acc, interleave(signal[:47])),
+                          readings(acc, interleave(signal[47:]))))
+    whole = dsp.SpectrumAccumulator(16, 4, dc_bins=0)
+    whole.set_magnitude(3)
+    assert np.allclose(out, readings(whole, interleave(signal))), out
+
+
+def test_an_odd_block_keeps_i_and_q_together():
+    # A block with an odd number of values would swap I and Q for every
+    # reading after it if the stray value were dropped instead of carried
+    acc = dsp.SpectrumAccumulator(16, 4, dc_bins=0)
+    acc.set_magnitude(1)
+    block = interleave(pulse(32, 10, 4))
+    out = np.concatenate((readings(acc, block[:15]), readings(acc, block[15:])))
+    loud = np.flatnonzero(out > -20.0)
+    assert list(loud) == [10, 11, 12, 13], loud
+
+
+def test_the_tap_says_where_it_began_so_readings_can_be_stamped():
+    # Reported in frames though it is counted in samples, so that a caller
+    # multiplying by the frame duration gets seconds from either tap
+    fft = 16
+    acc = dsp.SpectrumAccumulator(fft, 4, dc_bins=0)
+    assert acc.band_start_frame is None
+    readings(acc, interleave(np.zeros(fft * 3)))        # before the tap exists
+    acc.set_magnitude(1)
+    readings(acc, interleave(np.zeros(fft * 2)))
+    assert acc.band_start_frame == 3.0, acc.band_start_frame
+
+
+def test_the_two_taps_do_not_run_at_once():
+    # They share one output queue, and a reader cannot tell a bin reading
+    # from a sample reading once the two are mixed
+    acc = dsp.SpectrumAccumulator(16, 4, dc_bins=0)
+    acc.set_band(0, 4)
+    acc.set_magnitude(1)
+    assert acc.magnitude_group == 1
+    readings(acc, interleave(np.full(32, 127.0 + 0j)))
+    assert len(readings(acc, interleave(np.full(32, 127.0 + 0j)))) == 32
+    acc.set_band(0, 4)
+    assert acc.magnitude_group is None
+
+
+def test_an_unknown_magnitude_detector_is_refused():
+    acc = dsp.SpectrumAccumulator(16, 4, dc_bins=0)
+    for bad in ("total", "median", ""):
+        try:
+            acc.set_magnitude(1, bad)
+        except ValueError:
+            continue
+        raise AssertionError("accepted detector {!r}".format(bad))
