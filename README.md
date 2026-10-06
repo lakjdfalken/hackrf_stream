@@ -90,6 +90,26 @@ puts `pyproject.toml`, `README.md`, `LICENSE` and `.gitignore` at the root
 where a build expects them; the one commit after it moves the modules into the
 package directory.
 
+That is the first export. After it, `../hackrf_stream` already exists and the
+clone step refuses to run, so a re-export regenerates the clone in place
+instead — fetching the new split over the old one:
+
+```sh
+git branch -D export-hackrf-stream
+git subtree split --prefix=hackrf_stream -b export-hackrf-stream
+cd ../hackrf_stream
+git fetch "$OLDPWD" export-hackrf-stream   # the analyser, whatever it is called
+git reset --hard FETCH_HEAD
+mkdir hackrf_stream
+git mv __init__.py _libhackrf.py dsp.py source.py tests hackrf_stream/
+git commit -m "Put the package in its own directory"
+python -m hackrf_stream.tests
+```
+
+The reset throws away whatever the clone held, which is the point: it is a
+copy of the last export and nothing else, so first check that `git status` is
+clean and that `main` is where `origin/main` is.
+
 `git subtree split` is deterministic, so a re-export reproduces the same
 commits with the new ones on the end — but the commit that moves the modules
 is then rebuilt on a different parent and gets a new hash, so **the push is a
