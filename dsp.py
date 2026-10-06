@@ -193,17 +193,21 @@ def remove_dc_spike(spectrum, bins=2):
     tune to spend and so only works for a span under half the sample rate.
     Where that does not fit, these bins are guessed rather than measured, and
     the caller should say so on screen rather than draw a straight line and
-    leave it looking like quiet."""
+    leave it looking like quiet.
+
+    A 2D array is taken as one spectrum per row, so a whole block of them
+    costs one call rather than one each."""
     if bins <= 0:
         return spectrum
 
-    centre = spectrum.size // 2
+    size = spectrum.shape[-1]
+    centre = size // 2
     low, high = centre - bins, centre + bins
-    if low - 1 < 0 or high + 1 >= spectrum.size:
+    if low - 1 < 0 or high + 1 >= size:
         return spectrum
 
-    left, right = spectrum[low - 1], spectrum[high + 1]
-    spectrum[low:high + 1] = np.linspace(left, right, high - low + 1)
+    left, right = spectrum[..., low - 1], spectrum[..., high + 1]
+    spectrum[..., low:high + 1] = np.linspace(left, right, high - low + 1, axis=-1)
     return spectrum
 
 
@@ -600,9 +604,10 @@ class SpectrumAccumulator:
             groups = self._combine(
                 power[taken:end].reshape(complete, self.average, -1), 1)
             taken = end
-            for group in groups:
-                self._acc, self._count = group, self.average
-                yield self._finish()
+            # Converted to dB as one array rather than a row at a time. At a
+            # short average a block finishes thousands of spectra, and the
+            # shift, log and DC fill per row cost several times the FFTs
+            yield from self._to_db(groups, self.average)
 
         # Whatever is left starts the next spectrum
         if taken < rows:
@@ -611,15 +616,21 @@ class SpectrumAccumulator:
 
     def _finish(self):
         """Convert what has accumulated to dB and start the next spectrum"""
+        spectrum = self._to_db(self._acc, self._count)
+        self._acc, self._count = None, 0
+        return spectrum
+
+    def _to_db(self, power, count):
+        """Spectra in dB, lowest frequency first, from `count` frames of power
+
+        Works on one spectrum or on a row per spectrum alike."""
         # 127 is full scale for signed 8 bit, so 0 dBFS is a full scale sine.
         # A mean is the sum of the frames behind it and has to be divided by
         # how many; a peak is one frame's power already.
-        frames = self._count if self.mode == "mean" else 1
+        frames = count if self.mode == "mean" else 1
         scale = frames * (self._window_gain * 127.0) ** 2
-        spectrum = 10.0 * np.log10(np.fft.fftshift(self._acc) / scale + 1e-20)
-        remove_dc_spike(spectrum, self.dc_bins)
-        self._acc, self._count = None, 0
-        return spectrum
+        spectra = 10.0 * np.log10(np.fft.fftshift(power, axes=-1) / scale + 1e-20)
+        return remove_dc_spike(spectra, self.dc_bins)
 
     def reset(self):
         """Drop anything part-way through"""
