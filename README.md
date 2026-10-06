@@ -48,7 +48,7 @@ not on the air. Set `dc_bins=0` to see it.
 ## Testing
 
 ```
-python -m hackrf_stream.tests
+python3 -m hackrf_stream.tests
 ```
 
 No radio, no libhackrf and no test runner needed — they check the maths that
@@ -78,12 +78,19 @@ git branch -D export-hackrf-stream 2>/dev/null   # subtree split will not reuse 
 git subtree split --prefix=hackrf_stream -b export-hackrf-stream
 git clone -b export-hackrf-stream --single-branch . ../hackrf_stream
 cd ../hackrf_stream
+git branch -m main             # the clone is named after the split branch
 mkdir hackrf_stream
 git mv __init__.py _libhackrf.py dsp.py source.py tests hackrf_stream/
 git commit -m "Put the package in its own directory"
-python -m hackrf_stream.tests
-git remote add origin https://github.com/lakjdfalken/hackrf_stream.git
+python3 -m hackrf_stream.tests
+git remote set-url origin https://github.com/lakjdfalken/hackrf_stream.git
+git remote set-branches origin main   # the clone only tracked the split branch
+git fetch origin               # so the push below has something to lease against
 ```
+
+The clone points `origin` at the analyser it came from, which is why the URL
+is set rather than added. The same steps rebuild the clone if it has been
+deleted: the push is a force-push either way, below.
 
 The split keeps every commit that touched the package and nothing else, and
 puts `pyproject.toml`, `README.md`, `LICENSE` and `.gitignore` at the root
@@ -100,15 +107,19 @@ git subtree split --prefix=hackrf_stream -b export-hackrf-stream
 cd ../hackrf_stream
 git fetch "$OLDPWD" export-hackrf-stream   # the analyser, whatever it is called
 git reset --hard FETCH_HEAD
+git clean -fdx                 # what the reset leaves: bytecode, Finder's files
 mkdir hackrf_stream
 git mv __init__.py _libhackrf.py dsp.py source.py tests hackrf_stream/
 git commit -m "Put the package in its own directory"
-python -m hackrf_stream.tests
+python3 -m hackrf_stream.tests
 ```
 
 The reset throws away whatever the clone held, which is the point: it is a
-copy of the last export and nothing else, so first check that `git status` is
-clean and that `main` is where `origin/main` is.
+copy of the last export and nothing else, so first check that `git status`
+shows nothing tracked and that `main` is where `origin/main` is. The clean is
+needed too: running the tests leaves `__pycache__` inside the package
+directory, which git ignores and the reset therefore keeps, so without it the
+directory survives and `mkdir` refuses to make it.
 
 `git subtree split` is deterministic, so a re-export reproduces the same
 commits with the new ones on the end — but the commit that moves the modules
