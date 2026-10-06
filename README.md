@@ -49,6 +49,82 @@ same — spectra arrive about 1500 times a second with 512 bins averaging 26, an
 callback backs the queue up until transfers are dropped. Hand the spectrum off
 and do the work elsewhere.
 
+Powers are dBFS — a full scale sine reads 0 dB, whichever window is chosen.
+
+The receiver's own carrier lands in the middle of the band when tuned this way,
+so the centre bins are interpolated across rather than shown as a peak that is
+not on the air. Set `dc_bins=0` to see it, or keep it out of the span
+altogether with `offset_tune()`, below.
+
+`devices()` lists the HackRFs attached, and `serial=` picks one.
+
+## Watching one band in time
+
+A spectrum is an average, so a burst shorter than it is spread across all of
+it. The band tap reads the FFT frames themselves instead - one bin of an FFT is
+a filter, so following a few bins frame by frame is what a spectrum analyser
+does in zero span:
+
+```python
+source.set_band(1089e6, 1091e6, resolution=None, detector="peak")
+...
+readings = source.take_band_power()   # (N, 2): seconds since stream_start, dB
+```
+
+A frame is `fft_size / sample_rate` long - 25.6 us at 40 kHz bins - and with
+`resolution=None` there is one reading per frame. A longer `resolution` groups
+frames, combined by `detector`: `"peak"` keeps a pulse shorter than the
+reading at its own height, `"mean"` smooths, and `"total"` adds the band's bins
+rather than keeping the loudest, which suits a pulse that fills the band.
+
+Ask for a `resolution` shorter than one frame and the tap reads I*I + Q*Q off
+the samples instead, down to one sample (50 ns at 20 MSPS). That has no bins,
+so it measures the whole passband, not the band asked for; `band_magnitude`
+says when that is what is running. Readings are stamped from `stream_start`
+rather than from 1970, so their spacing survives being written down.
+`set_band(None, None)` stops the tap.
+
+## Peak instead of mean
+
+`mode="peak"` keeps the loudest of the frames behind each spectrum instead of
+averaging them. Averaging lowers the noise floor for a signal that is always
+there; for one that is not, it spreads the burst over the frames it missed and
+buries it. With `"peak"` a long `average` becomes a wider net rather than a
+deeper hole.
+
+## Gain
+
+`gain=40` is split across the two stages with the LNA filled first, because
+it is the stage that decides what the radio can hear; `lna=` and `vga=` set
+them directly, and `amp=True` adds the 14 dB RF amplifier in front.
+`set_gain()` changes them while running. `describe_gain(lna, vga, amp)` says in
+words what a setting adds up to and where any more gain would come from.
+
+## Keeping the DC spike out
+
+```python
+from hackrf_stream import baseband_filter_bw, offset_tune
+centre = offset_tune(start_freq, stop_freq, sample_rate,
+                     usable=baseband_filter_bw(0.75 * sample_rate))
+```
+
+returns a centre frequency that puts the whole span on one side of the
+receiver's own carrier, so that every bin shown is measured. `usable` is what
+the receiver actually passes - the source sets its baseband filter to three
+quarters of the sample rate, 15 MHz at 20 MSPS - and without it the span is
+fitted to the full sample rate and can land on the filter's roll-off, where it
+reads as the band going quiet at one end. It returns None when the span is too
+wide for any offset to clear the spike, and the centre bins are then
+interpolated instead.
+
+## Is anything being lost?
+
+`statistics()` reports the rate, how much of the stream arrived
+(`stream_fraction`), transfers dropped because the FFT thread fell behind
+(`dropped_transfers`), and how busy that thread is. `take_queue_peak()` and
+`take_gap_peak()` give the deepest the queue got and the longest wait between
+transfers since they were last asked.
+
 The receive callback is Python, so it needs the interpreter lock, and libhackrf
 holds only about 20 ms of transfers while it waits. Any thread in the same
 process holding the lock longer than that - a long numpy call, a repaint in a
@@ -58,12 +134,6 @@ figures show it: `statistics()["stream_fraction"]` falls short of 1, and
 `take_gap_peak()` reports a wait between transfers far past their period
 (6.55 ms at 20 MSPS). A short stream with ordinary gaps was lost in USB or the
 radio instead.
-
-Powers are dBFS — a full scale sine reads 0 dB, whichever window is chosen.
-
-The receiver's own carrier lands in the middle of the band when tuned this way,
-so the centre bins are interpolated across rather than shown as a peak that is
-not on the air. Set `dc_bins=0` to see it.
 
 ## Testing
 

@@ -363,8 +363,10 @@ class SpectrumSource:
         bins — where delivered spectra are averaged down to a hundred a
         second, so a burst too short to survive the averaging is still
         measured at full height. `resolution` asks for seconds per reading and
-        is rounded to whole frames; None gives one reading per frame, which is
-        as fine as the radio can be read. `detector` decides how the frames in
+        is rounded to whole frames; None gives one reading per frame. Shorter
+        than one frame, the tap reads the samples instead, down to one sample
+        a reading, and measures the whole passband rather than this band -
+        see band_magnitude. `detector` decides how the frames in
         one reading are combined, which is the video bandwidth choice a
         spectrum analyser makes: "peak" keeps a pulse shorter than the reading
         at its own height, "mean" smooths as the square root of the count.
@@ -500,7 +502,9 @@ class SpectrumSource:
 
     @property
     def frame_duration(self):
-        """Seconds of signal in one FFT frame — the finest band resolution"""
+        """Seconds of signal in one FFT frame, the finest the band tap reads bins at
+
+        A resolution shorter than this reads samples instead; see set_band()."""
         return self.fft_size / self.sample_rate
 
     @property
