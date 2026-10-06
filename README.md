@@ -21,6 +21,14 @@ rather than a worse one.
 The trade is span: one tune only sees one sample rate of spectrum, so at most
 20 MHz. Use `hackrf_sweep` for anything wider.
 
+## Install
+
+```sh
+pip install git+https://github.com/lakjdfalken/hackrf_stream.git@v0.2.0
+```
+
+libhackrf has to be installed separately; see Requirements.
+
 ## Use
 
 ```python
@@ -35,9 +43,21 @@ with SpectrumSource(center_freq=128e6, bin_size=40e3, average=26) as source:
     source.stop()
 ```
 
-The callback runs on libhackrf's own receive thread. Keep it short: while it
-is running the radio has nowhere to put samples and starts dropping them. Hand
-the spectrum off and do the work elsewhere.
+The callback runs on the source's own FFT thread, not on libhackrf's: the
+receive callback only copies each transfer onto a queue. Keep it short all the
+same — spectra arrive about 1500 times a second with 512 bins averaging 26, and a slow
+callback backs the queue up until transfers are dropped. Hand the spectrum off
+and do the work elsewhere.
+
+The receive callback is Python, so it needs the interpreter lock, and libhackrf
+holds only about 20 ms of transfers while it waits. Any thread in the same
+process holding the lock longer than that - a long numpy call, a repaint in a
+GUI toolkit that does not release it - loses the samples that arrive
+meanwhile, below the point where `dropped_transfers` can count them. Two
+figures show it: `statistics()["stream_fraction"]` falls short of 1, and
+`take_gap_peak()` reports a wait between transfers far past their period
+(6.55 ms at 20 MSPS). A short stream with ordinary gaps was lost in USB or the
+radio instead.
 
 Powers are dBFS — a full scale sine reads 0 dB, whichever window is chosen.
 
@@ -64,75 +84,28 @@ copy can always be checked where it is installed. pytest finds them too.
 
 Nothing is bundled: libhackrf is loaded from wherever the platform put it.
 
-## Exporting this package
+## Development
 
-It is developed inside [QSpectrumAnalyzer](https://github.com/lakjdfalken/qspectrumanalyzer)
-and exported from there, so this repository is a product rather than a place
-to work: **commit to the analyser, not here.** Anything committed here is lost
-at the next export.
+This repository is where the library is developed: issues and pull requests
+belong here. [QSpectrumAnalyzer](https://github.com/lakjdfalken/qspectrumanalyzer),
+where it began, is one program using it, and depends on its released
+versions like any other.
 
-From a clone of the analyser:
-
-```sh
-git branch -D export-hackrf-stream 2>/dev/null   # subtree split will not reuse it
-git subtree split --prefix=hackrf_stream -b export-hackrf-stream
-git clone -b export-hackrf-stream --single-branch . ../hackrf_stream
-cd ../hackrf_stream
-git branch -m main             # the clone is named after the split branch
-mkdir hackrf_stream
-git mv __init__.py _libhackrf.py dsp.py source.py tests hackrf_stream/
-git commit -m "Put the package in its own directory"
-python3 -m hackrf_stream.tests
-git remote set-url origin https://github.com/lakjdfalken/hackrf_stream.git
-git remote set-branches origin main   # the clone only tracked the split branch
-git fetch origin               # so the push below has something to lease against
-```
-
-The clone points `origin` at the analyser it came from, which is why the URL
-is set rather than added. The same steps rebuild the clone if it has been
-deleted: the push is a force-push either way, below.
-
-The split keeps every commit that touched the package and nothing else, and
-puts `pyproject.toml`, `README.md`, `LICENSE` and `.gitignore` at the root
-where a build expects them; the one commit after it moves the modules into the
-package directory.
-
-That is the first export. After it, `../hackrf_stream` already exists and the
-clone step refuses to run, so a re-export regenerates the clone in place
-instead — fetching the new split over the old one:
+To work on it beside a program that uses it, install the clone editable into
+that program's environment, so that changes here are picked up without
+reinstalling:
 
 ```sh
-git branch -D export-hackrf-stream
-git subtree split --prefix=hackrf_stream -b export-hackrf-stream
-cd ../hackrf_stream
-git fetch "$OLDPWD" export-hackrf-stream   # the analyser, whatever it is called
-git reset --hard FETCH_HEAD
-git clean -fdx                 # what the reset leaves: bytecode, Finder's files
-mkdir hackrf_stream
-git mv __init__.py _libhackrf.py dsp.py source.py tests hackrf_stream/
-git commit -m "Put the package in its own directory"
-python3 -m hackrf_stream.tests
+pip install -e path/to/hackrf_stream
 ```
 
-The reset throws away whatever the clone held, which is the point: it is a
-copy of the last export and nothing else, so first check that `git status`
-shows nothing tracked and that `main` is where `origin/main` is. The clean is
-needed too: running the tests leaves `__pycache__` inside the package
-directory, which git ignores and the reset therefore keeps, so without it the
-directory survives and `mkdir` refuses to make it.
-
-`git subtree split` is deterministic, so a re-export reproduces the same
-commits with the new ones on the end — but the commit that moves the modules
-is then rebuilt on a different parent and gets a new hash, so **the push is a
-force-push**:
+A release is a version bump in both `pyproject.toml` and `__init__.py` — a
+test checks that they agree — and a tag:
 
 ```sh
-git push --force-with-lease origin main
+git tag -a v0.3.0 -m "hackrf_stream 0.3.0"
+git push origin main v0.3.0
 ```
-
-That is why nothing may be committed here directly: a force-push is a
-regeneration, and anything that only ever existed in this repository is gone.
-One branch, one direction, no exceptions.
 
 ## Licence
 

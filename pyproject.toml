@@ -1,9 +1,4 @@
-# Packaging for hackrf_stream on its own.
-#
-# It lives beside the package rather than at the root of this repository
-# because the library is still developed inside QSpectrumAnalyzer and exported
-# from it; the export moves this file, the README and the LICENCE up to the
-# root of the standalone repository. See README.md, "Exporting this package".
+# Packaging for hackrf_stream. See README.md, "Development", for releases.
 
 [build-system]
 requires = ["setuptools>=61"]
