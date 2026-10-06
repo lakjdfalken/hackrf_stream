@@ -204,6 +204,9 @@ class SpectrumSource:
         self._busy_seconds = 0.0
         self._cpu_seconds = 0.0
         self._queue_peak = 0
+        # Longest wait between two transfers reaching Python; see take_gap_peak()
+        self._last_transfer = None
+        self._gap_peak = 0.0
         # Band power at the frame rate; see set_band()
         self._band_range = None
         self._band_resolution = None
@@ -271,6 +274,8 @@ class SpectrumSource:
         self._busy_seconds = 0.0
         self._cpu_seconds = 0.0
         self._queue_peak = 0
+        self._last_transfer = None
+        self._gap_peak = 0.0
         self._callback = callback
         self._started_at = time.monotonic()
         self._stream_start = time.time()
@@ -538,6 +543,13 @@ class SpectrumSource:
         Anything raised here would unwind into C, so failures are recorded and
         the stream is asked to stop instead."""
         try:
+            # Timed on the way in, which is after ctypes has taken the GIL
+            # for us: a long gap here is this callback kept waiting, by the
+            # lock or by anything else, and not the radio going quiet
+            now = time.monotonic()
+            last, self._last_transfer = self._last_transfer, now
+            if last is not None and now - last > self._gap_peak:
+                self._gap_peak = now - last
             transfer = transfer_pointer.contents
             length = transfer.valid_length
             if length <= 0:
@@ -710,6 +722,21 @@ class SpectrumSource:
         the start and has not happened since."""
         peak = self._queue_peak
         self._queue_peak = 0
+        return peak
+
+    def take_gap_peak(self):
+        """The longest wait between two transfers since this was last asked
+
+        Transfers arrive every TRANSFER_BYTES / 2 / sample_rate seconds, 6.55
+        ms at 20 MSPS. This is the one measurement that tells a loss above
+        libhackrf from one below it: samples missing from the stream while
+        the gaps stayed near that figure never reached this process, which
+        is the USB link or the radio, while a gap far beyond it means this
+        callback was held up - in Python, almost always by another thread
+        holding the interpreter lock - for long enough that libhackrf had
+        nowhere to keep what arrived meanwhile. In seconds; reset on reading."""
+        peak = self._gap_peak
+        self._gap_peak = 0.0
         return peak
 
     @property
