@@ -741,6 +741,23 @@ class SpectrumSource:
         return self._cpu_seconds / max(time.monotonic() - self._started_at, 1e-9)
 
     @property
+    def backlog(self):
+        """Blocks waiting for the FFT thread right now, out of queue_depth
+
+        The early warning that drops are coming. A queue that keeps growing
+        is a thread falling behind - starved of the interpreter lock, usually
+        - and it grows for seconds before it is full and the first block is
+        thrown away. Unlike queue_peak this is not a record of the past, so
+        any number of callers can read it without taking it from each other."""
+        blocks = self._blocks
+        return blocks.qsize() if blocks is not None else 0
+
+    @property
+    def queue_depth(self):
+        """How many blocks the queue holds before a new one is dropped"""
+        return QUEUE_DEPTH
+
+    @property
     def queue_peak(self):
         """The deepest the block queue has been, out of QUEUE_DEPTH"""
         return self._queue_peak
