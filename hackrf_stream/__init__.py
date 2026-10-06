@@ -28,7 +28,7 @@ from .source import (BAND_BACKLOG, FILTER_BANDWIDTHS, MAX_SAMPLE_RATE,
                      MIN_SAMPLE_RATE, SpectrumSource, baseband_filter_bw,
                      devices, library_version)
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 __all__ = [
     "HackRFError", "SpectrumAccumulator", "SpectrumSource",
     "AMP_GAIN_DB", "BAND_BACKLOG", "FILTER_BANDWIDTHS", "LNA_MAX_DB", "MAX_SAMPLE_RATE", "MIN_SAMPLE_RATE",

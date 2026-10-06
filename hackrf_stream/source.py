@@ -210,6 +210,8 @@ class SpectrumSource:
         # Band power at the frame rate; see set_band()
         self._band_range = None
         self._band_resolution = None
+        #: True while set_band() is leaving the DC spike's bins out
+        self._band_skips_dc = False
         self._band_detector = None
         #: True while the tap reads samples rather than bins; see set_band()
         self._band_magnitude = False
@@ -349,7 +351,7 @@ class SpectrumSource:
 
     # -- watching one band --------------------------------------------
 
-    def set_band(self, low_hz, high_hz, resolution=None, detector="peak"):
+    def set_band(self, low_hz, high_hz, resolution=None, detector="peak", skip_dc=True):
         """Follow one band's power in the time domain — a zero span view
 
         The radio cannot sit on a single frequency; it digitises a whole
@@ -371,9 +373,17 @@ class SpectrumSource:
         spectrum analyser makes: "peak" keeps a pulse shorter than the reading
         at its own height, "mean" smooths as the square root of the count.
 
+        The receiver's own carrier at the centre of the tune (dc_band) is left
+        out of the band, because the tap keeps the loudest bin and a carrier
+        thirty decibels up would otherwise be every reading it made. A band
+        that is nothing but the carrier still reads it, since there is nothing
+        else there to read; band_skips_dc says which happened. `skip_dc=False`
+        reads the raw bins whatever they hold.
+
         What it cannot do is look backwards: it measures the band asked for
         here, so changing the band starts again. Pass None for either edge to
         stop watching."""
+        self._band_skips_dc = False
         if low_hz is None or high_hz is None:
             self._accumulator.clear_band()
             self._accumulator.clear_magnitude()
@@ -415,9 +425,20 @@ class SpectrumSource:
 
         group = 1 if not resolution else max(1, int(round(float(resolution) / frame)))
 
+        skip = ()
+        if skip_dc:
+            # The same bins dc_band names: the centre one, which fftshift puts
+            # at fft_size/2, and dc_bins either side of it
+            centre, reach = self.fft_size // 2, max(self.dc_bins, 0)
+            spike = range(centre - reach, centre + reach + 1)
+            inside = [i for i in spike if first <= i < last]
+            if inside and len(inside) < last - first:
+                skip = inside
+                self._band_skips_dc = True
+
         self._band_samples.clear()
         self._band_readings = 0
-        self._accumulator.set_band(first, last, group, detector)
+        self._accumulator.set_band(first, last, group, detector, skip)
         self._band_range = (float(self.frequencies[first]),
                             float(self.frequencies[last - 1]))
         self._band_resolution = group * frame
@@ -480,6 +501,14 @@ class SpectrumSource:
     def band_error(self):
         """Whatever stopped the band tap, if anything did"""
         return self._band_error
+
+    @property
+    def band_skips_dc(self):
+        """True while the band has the receiver's carrier inside it, left out
+
+        band() still names the edges, so this is the way to tell a band read
+        whole from one with a hole in its middle."""
+        return self._band_skips_dc
 
     @property
     def band_resolution(self):

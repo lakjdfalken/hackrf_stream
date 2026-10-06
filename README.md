@@ -77,6 +77,12 @@ frames, combined by `detector`: `"peak"` keeps a pulse shorter than the
 reading at its own height, `"mean"` smooths, and `"total"` adds the band's bins
 rather than keeping the loudest, which suits a pulse that fills the band.
 
+The receiver's own carrier sits at the centre of every tune, and the tap would
+keep it as the loudest bin in every reading. So a band with the centre in it
+is read without the spike's bins (`dc_band` says where they are), and
+`band_skips_dc` says when that has happened. A band that is nothing but the
+spike still reads it. `skip_dc=False` reads the raw bins regardless.
+
 Ask for a `resolution` shorter than one frame and the tap reads I*I + Q*Q off
 the samples instead, down to one sample (50 ns at 20 MSPS). That has no bins,
 so it measures the whole passband, not the band asked for; `band_magnitude`

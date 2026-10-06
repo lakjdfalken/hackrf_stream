@@ -326,7 +326,7 @@ class SpectrumAccumulator:
     #: How a band reading may be reduced to one number
     DETECTORS = ("peak", "mean", "total")
 
-    def set_band(self, first, last, group=1, detector="peak"):
+    def set_band(self, first, last, group=1, detector="peak", skip=()):
         """Watch one band of bins, one reading per `group` frames
 
         `first` and `last` number the bins the way frequencies() does, lowest
@@ -361,7 +361,11 @@ class SpectrumAccumulator:
         "peak" goes as sqrt(n)*ln(n) — about 10 dB across sixteen bins, which
         is roughly what a radar detector in a Wi-Fi chipset is doing when it
         watches a whole channel. Frames are still combined by their peak,
-        because a wideband pulse is usually a short one."""
+        because a wideband pulse is usually a short one.
+
+        `skip` names bins inside the band to leave out, numbered the way
+        `first` and `last` are. A band that would be left with nothing keeps
+        them all, since a reading of something is better than no reading."""
         first = min(max(int(first), 0), self.fft_size - 1)
         last = min(max(int(last), first + 1), self.fft_size)
         # fftshift moves the upper half of the spectrum to the front, so bin i
@@ -373,7 +377,11 @@ class SpectrumAccumulator:
         # One tap at a time: both write into _band_out, and a reader has no
         # way to tell a bin reading from a sample reading once they are mixed
         self.clear_magnitude()
-        self._band_index = (np.arange(first, last) + half) % self.fft_size
+        bins = np.arange(first, last)
+        kept = bins[~np.isin(bins, np.asarray(skip, dtype=int))]
+        if kept.size:
+            bins = kept
+        self._band_index = (bins + half) % self.fft_size
         self._band_group = max(1, int(group))
         self._band_detector = detector
         self._band_carry = None
